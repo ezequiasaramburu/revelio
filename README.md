@@ -1,5 +1,9 @@
 ## Revelio
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-blue.svg)](CONTRIBUTING.md)
+[![GitHub stars](https://img.shields.io/github/stars/<your-org>/revelio?style=social)](https://github.com/<your-org>/revelio/stargazers)
+
 **Revelio** is a self-hosted, open source, AI-powered pull request reviewer for GitHub.  
 It behaves like a pragmatic senior engineer: **no nitpicks, no style wars, only comments on bugs, security issues, logic errors, and architectural problems** worth blocking a merge.
 

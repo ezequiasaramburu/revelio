@@ -16,28 +16,21 @@ It behaves like a pragmatic senior engineer: **no nitpicks, no style wars, only 
 
 ## How it works
 
-At a high level:
+### What triggers a review
 
-1. **GitHub** sends a pull request event to the Revelio **webhook**.
-2. The webhook validates the signature and enqueues a **review job**.
-3. A **worker** consumes jobs, fetches the PR diff, chunks it intelligently, and calls your chosen **LLM provider**.
-4. The LLM returns structured JSON describing review comments, which Revelio validates, filters, and posts back to GitHub as a **review**.
+Revelio does **not** poll GitHub. Once you install the Revelio **GitHub App** on a repo and subscribe it to **Pull request** events, **GitHub pushes** to your server:
 
-### High-level flow
+- When someone **opens** a PR, **pushes** new commits, or **re-syncs** the branch, GitHub sends an HTTP `POST` to your webhook URL with a signed payload. Locally that might be `http://localhost:3000/webhook` (or a tunnel like `https://<your-ngrok-id>.ngrok.io/webhook` so GitHub can reach your machine).
+- Revelio’s server receives it at `POST /webhook`, verifies the signature with `GITHUB_WEBHOOK_SECRET`, and—if the event is `pull_request`—enqueues a **review job** and responds `202` so GitHub doesn’t retry.
 
-```mermaid
-flowchart LR
-  gh[GitHub App<br/>PR events]
-  wh[Fastify /webhook<br/>src/index.ts + src/webhook/handler.ts]
-  q[Review queue<br/>BullMQ + Redis / SQS]
-  w[Worker process<br/>src/worker.ts]
-  diff[Diff + Config<br/>github/client + diff/chunker + config/loader]
-  llm[LLM Provider<br/>Claude / OpenAI / Gemini]
-  review[Review engine<br/>review/prompt + review/parser + review/poster]
+So: **the trigger is automatic for any repo where the App is installed**; no `.revelio.yml` is required for the webhook to fire. The config file is used later by the worker (see below).
 
-  gh --> wh --> q --> w
-  w --> diff --> llm --> review --> gh
-```
+### End-to-end flow
+
+1. **GitHub** sends a pull request event to the Revelio **webhook** (triggered by opening/updating a PR on an installed repo).
+2. The webhook validates the signature and enqueues a **review job** (repo, PR number, head SHA, installation id).
+3. A **worker** picks up the job, fetches the PR diff from the GitHub API, loads **`.revelio.yml`** from that repo (if present) to get ignore patterns and severity, chunks the diff, and calls your chosen **LLM provider** (rate-limited).
+4. The LLM returns structured JSON; Revelio validates it, filters by severity, and posts a single **review** (approve or request changes with inline comments) back to the PR.
 
 ### Local ↔ AWS parity
 
@@ -50,8 +43,6 @@ Local development and production infrastructure are intentionally isomorphic:
 | Worker process       | ECS Fargate          |
 | `.env` file          | SSM Parameter Store  |
 | `docker-compose.yml` | CDK stack (`infra/`) |
-
-If it does not translate cleanly to AWS, it does not belong in the local design.
 
 ## Quickstart
 
@@ -68,8 +59,8 @@ If it does not translate cleanly to AWS, it does not belong in the local design.
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/<your-org>/revelio.git
-cd revelio
+git clone https://github.com/ezequiasaramburu/ai-code-reviewer
+cd ai-code-reviewer
 npm install
 ```
 
@@ -183,94 +174,6 @@ export ANTHROPIC_API_KEY=...
 ```
 
 No application code changes are required.
-
-## Project structure
-
-```text
-revelio/
-│
-├── src/                        # All application source code
-│  │
-│  ├── index.ts                 # 🚀 Fastify server entrypoint (webhook + health)
-│  ├── worker.ts                # ⚙️ BullMQ worker entrypoint
-│  │
-│  ├── webhook/
-│  │  ├── handler.ts            # Receives, verifies, and enqueues GitHub webhook events
-│  │  └── constants.ts          # Webhook-related constants (event names, etc.)
-│  │
-│  ├── queue/
-│  │  ├── queue.ts              # BullMQ queue definitions + enqueue helpers + DLQ
-│  │  ├── jobs.ts               # Job type definitions (ReviewJobData, ReviewDeadLetterJob)
-│  │  └── constants.ts          # Queue names
-│  │
-│  ├── github/
-│  │  ├── client.ts             # Octokit wrapper (GitHub App auth)
-│  │  └── diff.ts               # Fetches raw PR diff from GitHub API
-│  │
-│  ├── diff/
-│  │  └── chunker.ts            # Splits large diffs into LLM-sized chunks
-│  │
-│  ├── llm/
-│  │  ├── types.ts              # LLMProvider interface — the core abstraction
-│  │  ├── factory.ts            # createProvider() — reads env, returns provider
-│  │  └── providers/
-│  │     ├── claude.ts          # Anthropic Claude implementation
-│  │     ├── openai.ts          # OpenAI GPT implementation
-│  │     └── gemini.ts          # Google Gemini implementation
-│  │
-│  ├── review/
-│  │  ├── constants.ts          # System prompt and related constants
-│  │  ├── prompt.ts             # Builds system + user prompts
-│  │  ├── parser.ts             # Parses LLM JSON → ReviewComment[]
-│  │  └── poster.ts             # Posts review comments back to GitHub
-│  │
-│  ├── config/
-│  │  ├── schema.ts             # Zod schema for .revelio.yml
-│  │  └── loader.ts             # Loads + validates per-repo config from GitHub
-│  │
-│  └── worker/
-│     └── filters.ts            # Helpers for applying config (ignore globs) to diff chunks
-│
-├── infra/                      # AWS CDK (TypeScript) — mirrors local arch
-│  ├── src/
-│  │  ├── app.ts                # CDK app entrypoint
-│  │  └── revelio-stack.ts      # API Gateway + SQS + Lambda/ECS + SSM
-│  ├── package.json             # Infra-specific dependencies (aws-cdk-lib, constructs, etc.)
-│  ├── tsconfig.json            # TS config for the CDK app
-│  └── cdk.json                 # CDK CLI configuration (app entrypoint)
-│
-├── tests/                      # Jest test suites
-│  ├── config/
-│  │  └── loader.test.js        # Config loader tests
-│  ├── diff/
-│  │  └── chunker.test.js       # Diff chunker tests
-│  ├── github/
-│  │  └── diff.test.js          # GitHub diff helper tests
-│  ├── llm/
-│  │  └── factory.test.js       # LLM factory tests
-│  ├── queue/
-│  │  └── dlq.test.js           # Dead-letter queue helper tests
-│  ├── review/
-│  │  ├── parser.test.js        # Review parser tests
-│  │  └── poster.test.js        # Review poster tests
-│  ├── webhook/
-│  │  └── handler.test.js       # Webhook handler + enqueue + signature tests
-│  └── worker/
-│     └── filters.test.js       # Worker filter helper tests
-│
-├── docker/
-│  └── docker-compose.yml       # Redis + server + worker for local dev
-│
-├── Dockerfile                  # App image used by docker-compose
-├── .revelio.yml.example        # Per-repo config template (sample)
-├── .env.example                # Env variables template (sample)
-├── jest.config.cjs             # Jest configuration
-├── CONTRIBUTING.md             # Contribution guidelines
-├── data-flow.md                # Local data-flow diagram
-├── package.json
-├── tsconfig.json
-└── README.md
-```
 
 ## Development
 

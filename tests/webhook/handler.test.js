@@ -40,6 +40,7 @@ function makeRequest(overrides = {}) {
 describe('webhookHandler', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.GITHUB_WEBHOOK_SECRET;
   });
 
   test('ignores non-pull_request events', async () => {
@@ -97,6 +98,62 @@ describe('webhookHandler', () => {
       pullNumber: 42,
       sha: 'abcdef1234567890',
     });
+  });
+
+  test('rejects request with invalid signature when secret is set', async () => {
+    process.env.GITHUB_WEBHOOK_SECRET = 'topsecret';
+
+    const request = makeRequest({
+      headers: {
+        'x-github-event': GITHUB_EVENT_PULL_REQUEST,
+        'x-hub-signature-256': 'sha256=invalid',
+      },
+      body: {
+        installation: { id: 123 },
+        repository: { owner: { login: 'owner' }, name: 'repo' },
+        pull_request: {
+          number: 1,
+          head: { sha: 'sha' },
+        },
+      },
+    });
+    const reply = makeReply();
+
+    await webhookHandler(request, reply);
+
+    expect(reply.statusCode).toBe(401);
+    expect(enqueueReview).not.toHaveBeenCalled();
+  });
+
+  test('accepts request with valid signature when secret is set', async () => {
+    const crypto = require('crypto');
+    const secret = 'topsecret';
+    process.env.GITHUB_WEBHOOK_SECRET = secret;
+
+    const body = {
+      installation: { id: 123 },
+      repository: { owner: { login: 'owner' }, name: 'repo' },
+      pull_request: {
+        number: 99,
+        head: { sha: 'abcdef' },
+      },
+    };
+    const payload = JSON.stringify(body);
+    const sig = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+
+    const request = makeRequest({
+      headers: {
+        'x-github-event': GITHUB_EVENT_PULL_REQUEST,
+        'x-hub-signature-256': `sha256=${sig}`,
+      },
+      body,
+    });
+    const reply = makeReply();
+
+    await webhookHandler(request, reply);
+
+    expect(reply.statusCode).toBe(202);
+    expect(enqueueReview).toHaveBeenCalledTimes(1);
   });
 });
 

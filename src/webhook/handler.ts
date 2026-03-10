@@ -1,9 +1,29 @@
 import { FastifyReply, FastifyRequest } from 'fastify';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { createReviewQueue, enqueueReview } from '../queue/queue';
 import { ReviewJobData } from '../queue/jobs';
 import { GITHUB_EVENT_PULL_REQUEST } from './constants';
 
 const queue = createReviewQueue();
+
+function verifySignature(
+  payload: string,
+  signatureHeader: string | string[] | undefined,
+  secret: string | undefined,
+): boolean {
+  if (!secret) return true;
+  if (!signatureHeader || Array.isArray(signatureHeader)) return false;
+
+  const expected = createHmac('sha256', secret).update(payload).digest('hex');
+  const expectedHeader = `sha256=${expected}`;
+
+  const received = Buffer.from(signatureHeader);
+  const expectedBuf = Buffer.from(expectedHeader);
+
+  if (received.length !== expectedBuf.length) return false;
+
+  return timingSafeEqual(received, expectedBuf);
+}
 
 export async function webhookHandler(
   request: FastifyRequest,
@@ -11,6 +31,16 @@ export async function webhookHandler(
 ): Promise<void> {
   const event = request.headers['x-github-event'];
   const delivery = request.headers['x-github-delivery'];
+  const signature = request.headers['x-hub-signature-256'];
+
+  const secret = process.env.GITHUB_WEBHOOK_SECRET;
+  const rawPayload = JSON.stringify(request.body ?? {});
+
+  if (!verifySignature(rawPayload, signature, secret)) {
+    request.log.warn({ event, delivery }, 'Invalid GitHub webhook signature');
+    reply.code(401).send();
+    return;
+  }
 
   request.log.info({ event, delivery }, 'Received GitHub webhook');
 
@@ -19,20 +49,20 @@ export async function webhookHandler(
     return;
   }
 
-  const payload = request.body as any;
-  const pr = payload.pull_request;
-  const installationId = payload.installation?.id;
+  const body = request.body as any;
+  const pr = body.pull_request;
+  const installationId = body.installation?.id;
 
   if (!pr || !installationId) {
-    request.log.warn({ payload }, 'Ignoring webhook without PR or installation');
+    request.log.warn({ payload: body }, 'Ignoring webhook without PR or installation');
     reply.code(400).send();
     return;
   }
 
   const job: ReviewJobData = {
     installationId,
-    owner: payload.repository.owner.login,
-    repo: payload.repository.name,
+    owner: body.repository.owner.login,
+    repo: body.repository.name,
     pullNumber: pr.number,
     sha: pr.head.sha,
   };

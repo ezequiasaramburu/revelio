@@ -88,8 +88,8 @@ Copy `.env.example` to `.env` (or create `.env` if you prefer) and fill in the v
 
 1. Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHub App**.
 2. **Webhook URL**:
-   - Local: `http://localhost:3000/webhook`
-   - If GitHub cannot reach your machine directly, use **ngrok** or similar and point the App at `https://<your-ngrok-id>.ngrok.io/webhook`.
+   - **Local development:** GitHub **cannot** call `http://localhost:3000/webhook` directly. You must expose your local server via a tunnel (e.g. **ngrok**) and use that HTTPS URL, e.g. `https://<your-ngrok-id>.ngrok.io/webhook`.
+   - **Deployed environment:** Use your public HTTPS URL, e.g. `https://revelio.your-domain.com/webhook`.
 3. **Webhook secret**: Choose a strong secret and put it in `GITHUB_WEBHOOK_SECRET`.
 4. **Permissions**:
    - **Pull requests**: `Read & write`
